@@ -15,6 +15,8 @@ app.use(express.static('public'));
 app.use('/api', require('./routes/platoRoutes'))
 app.use('/api', require('./routes/clientesRoutes'))
 app.use('/api', require('./routes/ordenRoutes'))
+app.use('/api', require('./routes/categoriaRoutes'))
+app.use('/api', require('./routes/meseroRoutes'))
 
 app.listen(config.port, () => {
     console.log('El servidor corriendo por el puerto 3000')

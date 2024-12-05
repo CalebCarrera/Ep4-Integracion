@@ -6,14 +6,12 @@ const OrdenDetalle = require('../model/ordenDetalle')
 const config = require('../config/global');
 exports.crearOrden = async (req, res) => {
     try {
-        const { numeroMesa, platillos, estado } = req.body;
+        const { numeroMesa, platillos, estado, nota } = req.body;
 
-        // Verificar que se proporcionen los campos obligatorios
         if (!numeroMesa || !platillos || platillos.length === 0) {
             return res.status(400).send('Faltan campos obligatorios');
         }
 
-        // Verificar que el estado sea uno de los valores permitidos, si se proporciona
         const estadosPermitidos = ['pendiente', 'preparando', 'listo', 'entregado', 'cancelado'];
         if (estado && !estadosPermitidos.includes(estado)) {
             return res.status(400).send('Estado inválido. Los estados permitidos son: pendiente, preparando, listo, entregado, cancelado.');
@@ -22,7 +20,6 @@ exports.crearOrden = async (req, res) => {
         let totalOrden = 0;
         const detalles = [];
 
-        // Procesar los platillos seleccionados
         for (const item of platillos) {
             const plato = await Plato.findById(item.platoId);
             if (!plato) {
@@ -33,36 +30,38 @@ exports.crearOrden = async (req, res) => {
             totalOrden += totalPlato;
 
             detalles.push({
-                platoId: item.platoId, 
-                cantidad: item.cantidad, 
-                descripcion: plato.nombre, 
-                precioUnitario: plato.precio, 
-                total: totalPlato 
+                platoId: item.platoId,
+                cantidad: item.cantidad,
+                descripcion: plato.nombre,
+                precioUnitario: plato.precio,
+                total: totalPlato,
+                nota: nota || ''  // Asocia la nota a cada detalle de la orden
             });
         }
 
-        // Crear la nueva orden con el estado elegido o el predeterminado
+        // Crear la orden con la nota general
         const nuevaOrden = new Orden({
-            numeroMesa, 
+            numeroMesa,
             platillos: detalles,
             total: totalOrden,
-            estado: estado || 'pendiente' 
+            estado: estado || 'pendiente',
+            nota: nota || ''  // La nota general de la orden
         });
 
-        // Guardar la orden
         const ordenGuardada = await nuevaOrden.save();
 
-        // Crear los detalles de la orden
+        // Guardar cada detalle en la colección de OrdenDetalle
         for (const detalle of detalles) {
             const nuevoDetalle = new OrdenDetalle({
-                ordenId: ordenGuardada._id, 
+                ordenId: ordenGuardada._id,
                 cantidad: detalle.cantidad,
                 descripcion: detalle.descripcion,
                 precioUnitario: detalle.precioUnitario,
-                total: detalle.total
+                total: detalle.total,
+                nota: detalle.nota  // Guarda la nota en cada detalle
             });
 
-            await nuevoDetalle.save(); 
+            await nuevoDetalle.save();
         }
 
         res.status(201).send('Orden y sus detalles creados exitosamente');
@@ -73,6 +72,7 @@ exports.crearOrden = async (req, res) => {
         res.status(500).send('Hubo un error al crear la orden y sus detalles');
     }
 };
+
 
 exports.obtenerOrden = async (req, res) => {
     try {
@@ -91,7 +91,8 @@ exports.obtenerOrden = async (req, res) => {
                 descripcion: detalle.descripcion,
                 cantidad: detalle.cantidad,
                 precioUnitario: detalle.precioUnitario,
-                total: detalle.total
+                total: detalle.total,
+                nota: detalle.nota
             })),
             total: orden.total 
         });
@@ -103,72 +104,98 @@ exports.obtenerOrden = async (req, res) => {
 exports.actualizarOrden = async (req, res) => {
     try {
         const { id } = req.params;
-        const { numeroMesa, platillos, estado } = req.body; // Agregar 'estado' al cuerpo de la solicitud
+        const { numeroMesa, platillos, estado, nota } = req.body; // Se agrega 'nota' en el body
 
-        // Verificar que la lista de platillos no esté vacía
-        if (!platillos || platillos.length === 0) {
-            return res.status(400).send('Se deben proporcionar platillos');
+        // Verificación de campos obligatorios
+        if (!numeroMesa || !platillos || platillos.length === 0) {
+            return res.status(400).send('Faltan campos obligatorios');
         }
 
-        // Verificar que el estado, si se proporciona, sea uno de los valores permitidos
+        // Verificación del estado
         const estadosPermitidos = ['pendiente', 'preparando', 'listo', 'entregado', 'cancelado'];
         if (estado && !estadosPermitidos.includes(estado)) {
             return res.status(400).send('Estado inválido. Los estados permitidos son: pendiente, preparando, listo, entregado, cancelado.');
         }
 
-        // Actualizar la orden con el número de mesa, el total calculado y el estado
-        const ordenActualizada = await Orden.findByIdAndUpdate(
-            id,
-            { 
-                numeroMesa, 
-                total: platillos.reduce((total, item) => total + (item.cantidad * item.precio), 0),
-                estado: estado || undefined // Si el estado se proporciona, actualizarlo
-            },
-            { new: true }
-        );
-
-        // Si la orden no se encuentra, devolver error
-        if (!ordenActualizada) {
+        // Buscar la orden que se desea actualizar
+        const ordenExistente = await Orden.findById(id);
+        if (!ordenExistente) {
             return res.status(404).send('Orden no encontrada');
         }
 
-        // Eliminar los detalles de la orden actual antes de agregar los nuevos
-        await OrdenDetalle.deleteMany({ ordenId: id });
+        let totalOrden = 0;
+        const detalles = [];
 
+        // Actualizar los detalles de la orden
         for (const item of platillos) {
-            // Verificar si se proporcionó un platoId
-            if (!item.platoId) {
-                return res.status(400).send('Falta el platoId en uno de los platillos');
-            }
-
-            // Buscar el plato por platoId
             const plato = await Plato.findById(item.platoId);
             if (!plato) {
                 return res.status(404).send(`Plato con ID ${item.platoId} no encontrado`);
             }
+        
+            // Validar que cantidad y precio sean números válidos
+            if (isNaN(item.cantidad) || item.cantidad <= 0) {
+                return res.status(400).send(`Cantidad inválida para el plato con ID ${item.platoId}`);
+            }
+        
+            if (isNaN(plato.precio) || plato.precio <= 0) {
+                return res.status(400).send(`Precio inválido para el plato con ID ${item.platoId}`);
+            }
+        
+            const totalPlato = item.cantidad * plato.precio;
+            
+            // Verificar que el total del plato no sea NaN
+            if (isNaN(totalPlato)) {
+                return res.status(400).send(`El total calculado para el plato con ID ${item.platoId} es inválido`);
+            }
 
-            // Crear un nuevo detalle de la orden
-            const nuevoDetalle = new OrdenDetalle({
-                ordenId: ordenActualizada._id,
-                cantidad: item.cantidad,
-                descripcion: plato.nombre,
-                precioUnitario: plato.precio,
-                total: item.cantidad * plato.precio,
-                platoId: item.platoId // Asegurarse de que el platoId se guarda
+            totalOrden += totalPlato;
+        
+            detalles.push({
+                platoId: item.platoId, 
+                cantidad: item.cantidad, 
+                descripcion: plato.nombre, 
+                precioUnitario: plato.precio, 
+                total: totalPlato,
+                nota: nota || ""  // Asegurarse de que 'nota' sea una cadena vacía si no se proporciona
             });
-
-            // Guardar el nuevo detalle
-            await nuevoDetalle.save();
         }
 
-        res.json({
-            message: 'Orden y sus detalles actualizados exitosamente',
-            orden: ordenActualizada,
-            detalles: platillos
-        });
+        // Asegurarse de que el total de la orden no sea NaN antes de actualizar
+        if (isNaN(totalOrden)) {
+            return res.status(400).send('El total de la orden es inválido');
+        }
 
+        // Actualizar la orden con nuevos detalles, total y la nota
+        ordenExistente.numeroMesa = numeroMesa;
+        ordenExistente.platillos = detalles;
+        ordenExistente.total = totalOrden;
+        ordenExistente.estado = estado || ordenExistente.estado;  // Mantener el estado si no se pasa uno nuevo
+        ordenExistente.nota = nota || "";  // Asegurar que la nota sea vacía si no se proporciona
+
+        const ordenActualizada = await ordenExistente.save();
+
+        // Eliminar detalles antiguos y agregar los nuevos
+        await OrdenDetalle.deleteMany({ ordenId: id });
+
+        for (const detalle of detalles) {
+            const nuevoDetalle = new OrdenDetalle({
+                ordenId: ordenActualizada._id, 
+                cantidad: detalle.cantidad,
+                descripcion: detalle.descripcion,
+                precioUnitario: detalle.precioUnitario,
+                total: detalle.total,
+                nota: detalle.nota // Asegurar que 'nota' se guarde correctamente
+            });
+
+            await nuevoDetalle.save(); 
+        }
+
+        res.status(200).send('Orden actualizada exitosamente');
     } catch (error) {
-        console.error(error);
+        console.error('Error al actualizar la orden:', error.message);
+        console.error(error.stack);
+
         res.status(500).send('Hubo un error al actualizar la orden y sus detalles');
     }
 };
@@ -177,6 +204,7 @@ exports.eliminarOrden = async (req, res) => {
     try {
         const { id } = req.params;
 
+        // Eliminar los detalles de la orden
         const detallesEliminados = await OrdenDetalle.deleteMany({ ordenId: id });
 
         if (detallesEliminados.deletedCount === 0) {
